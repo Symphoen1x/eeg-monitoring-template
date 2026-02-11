@@ -1,0 +1,147 @@
+"""
+main.py
+=======
+Main orchestrator for Muse EEG Driver Monitoring System.
+
+Purpose:
+Run real-time EEG acquisition, processing, feature extraction,
+and cognitive analysis for driver safety monitoring.
+"""
+
+import time
+import numpy as np
+
+from eeg.acquisition import EEGAcquisition
+from eeg.preprocessing import EEGPreprocessor
+from eeg.features import EEGFeatureExtractor
+from eeg.analysis import CognitiveAnalyzer
+
+
+def main():
+    print("=" * 60)
+    print(" MUSE EEG – DRIVER MONITORING SYSTEM ")
+    print("=" * 60)
+
+    # =========================
+    # INITIALIZATION
+    # =========================
+    eeg = EEGAcquisition()
+    eeg.connect()
+
+    preprocessor = EEGPreprocessor(
+        sampling_rate=eeg.sampling_rate,
+        driving_mode=True  # Enable driving-optimized preprocessing
+    )
+
+    extractor = EEGFeatureExtractor(
+        sampling_rate=eeg.sampling_rate
+    )
+
+    analyzer = CognitiveAnalyzer()
+
+    print("\n[INFO] System initialized successfully")
+    
+    # =========================
+    # CALIBRATION PHASE
+    # =========================
+    print("\n" + "=" * 60)
+    print(" CALIBRATION PHASE ")
+    print("=" * 60)
+    print("\n[INFO] Please relax and look forward for 10 seconds...")
+    print("[INFO] This establishes your personal baseline.\n")
+    
+    analyzer.start_calibration()
+    calibration_complete = False
+    
+    for i in range(5):
+        print(f"  Calibrating... {(i+1)*2}/10 seconds")
+        raw_data, _ = eeg.pull_chunk(duration=2.0)
+        
+        if raw_data.size > 0:
+            clean_data, quality = preprocessor.process(raw_data)
+            if clean_data.size > 0 and quality > 0.3:
+                features = extractor.extract(clean_data)
+                calibration_complete = analyzer.add_calibration_sample(features)
+    
+    if calibration_complete:
+        print("\n[SUCCESS] Calibration complete!")
+        print(f"  Baseline θ/α: {analyzer.baseline['theta_alpha']:.2f}")
+        print(f"  Baseline β/α: {analyzer.baseline['beta_alpha']:.2f}")
+        print(f"  Baseline α/β: {analyzer.baseline['alpha_beta']:.2f}")
+    else:
+        print("\n[WARN] Calibration incomplete, using default thresholds")
+
+    print("\n[INFO] Starting real-time driver monitoring...")
+    print("[INFO] Press Ctrl+C to stop\n")
+
+    # =========================
+    # REAL-TIME LOOP
+    # =========================
+    try:
+        while True:
+            # 1️⃣ Acquire EEG (2 seconds window)
+            raw_data, timestamps = eeg.pull_chunk(duration=2.0)
+
+            if raw_data.size == 0:
+                print("[WARN] No EEG data received")
+                continue
+
+            # 2️⃣ Preprocess (with quality score)
+            clean_data, quality = preprocessor.process(raw_data)
+
+            if clean_data.size == 0:
+                print("[WARN] No valid data after preprocessing")
+                continue
+
+            # 3️⃣ Feature extraction
+            features = extractor.extract(clean_data)
+
+            # 4️⃣ Cognitive analysis (with quality weighting)
+            result = analyzer.analyze(features, signal_quality=quality)
+
+            # =========================
+            # DISPLAY RESULT
+            # =========================
+            state_emoji = {
+                "fatigue": "😴 FATIGUE",
+                "stress": "😰 STRESS",
+                "focused": "🎯 FOCUSED",
+                "relaxed": "😌 RELAXED",
+                "normal": "😊 NORMAL",
+                "unknown": "❓ UNKNOWN"
+            }
+            
+            state_display = state_emoji.get(result['state'], result['state'].upper())
+            
+            print("-" * 55)
+            print(f"  {state_display:<18} "
+                  f"│ Confidence: {result['confidence']:.0%} "
+                  f"│ Quality: {result['quality']:.0%}")
+            print(f"     θ/α: {result['metrics'].get('theta_alpha', 0):.2f}  "
+                  f"β/α: {result['metrics'].get('beta_alpha', 0):.2f}  "
+                  f"α/β: {result['metrics'].get('alpha_beta', 0):.2f}")
+            
+            # Show all scores for debugging
+            if 'scores' in result and result['scores']:
+                scores_str = "  Scores: " + " | ".join(
+                    f"{k}={v:.0%}" for k, v in result['scores'].items()
+                )
+                print(scores_str)
+            
+            # Warning for dangerous states
+            if result['state'] == 'fatigue' and result['confidence'] > 0.7:
+                print("  ⚠️  WARNING: High drowsiness detected! Consider taking a break.")
+            elif result['state'] == 'stress' and result['confidence'] > 0.7:
+                print("  ⚠️  WARNING: High stress detected! Try to relax.")
+
+            # Control update rate
+            time.sleep(1.0)
+
+    except KeyboardInterrupt:
+        print("\n\n[INFO] Stopping driver monitoring system...")
+        eeg.close()
+        print("[SUCCESS] System terminated cleanly")
+
+
+if __name__ == "__main__":
+    main()
